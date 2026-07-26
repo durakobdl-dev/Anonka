@@ -2,114 +2,87 @@ import asyncio
 import secrets
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 TOKEN = "8711798783:AAGCkdPILh20kBDzQHWvYM5EXmaaPbahn50"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Хранилища в памяти (не сохраняются после перезапуска)
 pending_invites = {}   # {token: creator_user_id}
 active_chats = {}      # {user_id: partner_user_id}
 
-# Предупреждение о мошенниках
-WARNING = (
-    "⚠️ <b>Обращение к пользователям:</b>\n\n"
-    "Этот бот часто используется для обмана. "
-    "Если вам предлагают перевести деньги за запрещённые вещества — это ОБМАН! "
-    "У вас просто заберут деньги и закроют чат.\n"
-    "Разработчик не сохраняет логи и не сможет помочь — мы бережём приватность.\n"
-    "Берегите свои деньги и будьте внимательны!"
-)
+# Тексты сообщений
+MSG_CREATED = "[BOT] Создан новый чат. Отправь собеседнику эту ссылку и как только он присоединится к чату, вы сможете общаться."
+MSG_ALREADY_CREATED = "[BOT] Чат уже создан. Твой собеседник еще не вошел в чат. Подожди, пока он присоединится или отмени чат командой /stop"
+MSG_JOINED = "[BOT] Твой собеседник вошел в чат. Приятного общения!"
+MSG_CHAT_ENDED = "[BOT] Чат завершен. Чтобы начать новый чат нажми /start"
+MSG_INVALID_LINK = "[BOT] Ссылка недействительна или чат уже создан."
+MSG_SELF_CONNECT = "[BOT] Нельзя подключиться к самому себе."
 
-# Клавиатура с основными кнопками
-def main_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🔗 Создать чат")],
-            [KeyboardButton(text="❌ Выйти из чата")]
-        ],
-        resize_keyboard=True
-    )
-
-# ================= ОБРАБОТЧИКИ КОМАНД =================
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    # Если перешли по ссылке с параметром join_<token>
+    user_id = message.from_user.id
     args = message.text.split()
+
+    # Если перешли по ссылке с параметром join_<token>
     if len(args) > 1 and args[1].startswith("join_"):
         token = args[1][5:]
         if token in pending_invites:
             creator_id = pending_invites[token]
-            if creator_id == message.from_user.id:
-                await message.answer("❌ Нельзя подключиться к самому себе.")
+            if creator_id == user_id:
+                await message.answer(MSG_SELF_CONNECT)
                 return
-            if creator_id in active_chats or message.from_user.id in active_chats:
-                await message.answer("❌ Один из вас уже состоит в чате.")
+            if creator_id in active_chats or user_id in active_chats:
+                await message.answer(MSG_CHAT_ENDED)
                 return
-            # Связываем пользователей
-            active_chats[creator_id] = message.from_user.id
-            active_chats[message.from_user.id] = creator_id
-            del pending_invites[token]  # одноразовый токен
-            await message.answer("✅ Собеседник вошёл в чат. Приятного общения!", reply_markup=main_keyboard())
-            await bot.send_message(creator_id, "✅ Твой собеседник вошёл в чат. Приятного общения!", reply_markup=main_keyboard())
+            # Связываем
+            active_chats[creator_id] = user_id
+            active_chats[user_id] = creator_id
+            del pending_invites[token]
+            await message.answer(MSG_JOINED)
+            await bot.send_message(creator_id, MSG_JOINED)
         else:
-            await message.answer("❌ Ссылка недействительна или чат уже создан.")
-    else:
-        # Обычный /start
-        await message.answer(
-            "👋 Приватный чат.\n\n" + WARNING,
-            parse_mode="HTML",
-            reply_markup=main_keyboard()
-        )
-
-@dp.message(Command("stop"))
-async def stop_cmd(message: types.Message):
-    await leave_chat(message)
-
-# ================= КНОПКИ =================
-@dp.message(F.text == "🔗 Создать чат")
-async def create_chat(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in active_chats:
-        await message.answer("❌ Вы уже состоите в чате. Сначала выйдите из него.")
+            await message.answer(MSG_INVALID_LINK)
         return
-    # Генерируем уникальный токен
+
+    # Обычный /start
+    if user_id in active_chats:
+        # Уже есть активный чат
+        await message.answer(MSG_ALREADY_CREATED)
+        return
+
+    # Создаём новый чат
     token = secrets.token_urlsafe(24)
     pending_invites[token] = user_id
     bot_username = (await bot.me()).username
     link = f"https://t.me/{bot_username}?start=join_{token}"
-    await message.answer(
-        f"🔗 Отправьте эту ссылку собеседнику:\n{link}\n\n{WARNING}",
-        disable_web_page_preview=True,
-        parse_mode="HTML"
-    )
+    await message.answer(MSG_CREATED)
+    await message.answer(link, disable_web_page_preview=True)
 
-@dp.message(F.text == "❌ Выйти из чата")
-async def leave_chat_button(message: types.Message):
-    await leave_chat(message)
-
-async def leave_chat(message: types.Message):
+@dp.message(Command("stop"))
+async def stop_cmd(message: types.Message):
     user_id = message.from_user.id
     partner_id = active_chats.pop(user_id, None)
     if partner_id:
         active_chats.pop(partner_id, None)
-        await message.answer("🚪 Вы вышли из чата.", reply_markup=main_keyboard())
-        await bot.send_message(partner_id, "🚪 Собеседник покинул чат.", reply_markup=main_keyboard())
+        await message.answer(MSG_CHAT_ENDED)
+        await bot.send_message(partner_id, MSG_CHAT_ENDED)
     else:
-        await message.answer("❌ Вы не состоите в чате.")
+        # Если не в чате, но есть ожидающий инвайт – удаляем его
+        for token, uid in list(pending_invites.items()):
+            if uid == user_id:
+                del pending_invites[token]
+                await message.answer(MSG_CHAT_ENDED)
+                return
+        await message.answer("[BOT] Вы не состоите в чате.")
 
-# ================= ПЕРЕСЫЛКА СООБЩЕНИЙ =================
 @dp.message(F.text)
-async def forward_message(message: types.Message):
+async def forward_text(message: types.Message):
     user_id = message.from_user.id
     if user_id in active_chats:
         partner_id = active_chats[user_id]
-        await bot.send_message(partner_id, f"💬 Собеседник: {message.text}")
-    else:
-        await message.answer("Вы не в чате. Используйте /start и создайте новый чат.")
+        await bot.send_message(partner_id, message.text)
+    # Если не в чате – игнорируем
 
-# ================= ЗАПУСК =================
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
